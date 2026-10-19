@@ -26,3 +26,7 @@ desktop.ini
 # 打包用的 zip
 *.zip
 
+
+# 本地解压 zip 产生的副本
+wxchat-export/
+
