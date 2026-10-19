@@ -1,0 +1,28 @@
+# 涓嶄笂浼犱换浣曠湡瀹炴暟鎹細瀵嗛挜銆佽В瀵嗗悗鐨勬暟鎹簱銆佸鍑虹粨鏋滈兘灞炰簬闅愮鍐呭
+work/
+瀵煎嚭/
+output/
+*.log
+
+# 鏄庢枃瀵嗛挜缂撳瓨
+keys_*.json
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 宸ュ叿/绯荤粺
+.piptmp/
+.venv/
+venv/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# 打包用的 zip
+*.zip
+

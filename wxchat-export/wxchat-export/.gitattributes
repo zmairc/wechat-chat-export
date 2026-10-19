@@ -1,0 +1,11 @@
+# 统一换行，避免 Windows 用户下到的 .bat 变成 LF 而双击报错
+* text=auto eol=lf
+
+# 批处理必须是 CRLF，否则 cmd.exe 会解析出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不要动
+*.png binary
+*.jpg binary
+*.zip binary
