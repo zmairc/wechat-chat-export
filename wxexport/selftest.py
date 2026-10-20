@@ -17,6 +17,7 @@ import hmac as hmac_mod
 import os
 import shutil
 import struct
+import sys
 
 from . import media, sqlcipher, wxmsg
 from .cng_aes import AesCbc, AesEcb
@@ -299,6 +300,20 @@ def check_helpers() -> str:
 
 # ------------------------------------------------------------------ 入口
 
+def force_utf8_stdio() -> None:
+    """把 stdout/stderr 切成 UTF-8。
+
+    某些环境（比如 GitHub Actions 的 Windows runner）默认是 cp1252，
+    一 print 中文就抛 UnicodeEncodeError；重定向到文件时同理。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # 老版本或被包装过的流
+            pass
+
+
 CHECKS = (
     check_aes_vectors,
     check_sqlcipher_roundtrip,
@@ -309,6 +324,7 @@ CHECKS = (
 
 
 def run(verbose: bool = True) -> bool:
+    force_utf8_stdio()
     print("=" * 66)
     print("  自检：不读微信、不联网，只验证格式解析与解密逻辑")
     print("=" * 66)

@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Windows runner 默认代码页是 cp1252，输出中文会报 UnicodeEncodeError
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 jobs:
   selftest:
     # 自检只用 Windows 自带的 bcrypt.dll，不需要装任何依赖
