@@ -109,7 +109,7 @@ python -m unittest discover -s tests   # 同一批断言，CI 里跑的就是这
 ```
 
 自检自己造密文再解密，**不读微信、不联网、不需要第三方库**，读代码时也能直接验证它确实只是在做解密和搬运。
-CI（`.github/workflows/ci.yml`）在 Windows + Python 3.10~3.13 上跑这套自检。
+CI（`.github/workflows/ci.yml`）在 Windows + Python 3.11~3.13 上跑这套自检。
 
 ## 目录结构
 
