@@ -11,8 +11,10 @@ jobs:
     # 自检只用 Windows 自带的 bcrypt.dll，不需要装任何依赖
     runs-on: windows-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # 3.10 在 GitHub 的 windows runner 上安装经常被取消，所以从 3.11 起测
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
