@@ -10,6 +10,8 @@ on:
 env:
   PYTHONUTF8: "1"
   PYTHONIOENCODING: utf-8
+  # 断言失败也打印完整栈，否则日志里只有一行 [FAIL] xxx:
+  SELFTEST_TRACEBACK: "1"
 
 jobs:
   selftest:

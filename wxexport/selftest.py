@@ -15,6 +15,7 @@ import ctypes.wintypes as wt
 import hashlib
 import hmac as hmac_mod
 import os
+import platform
 import shutil
 import struct
 import sys
@@ -53,16 +54,24 @@ class _Enc:
         b.BCryptDestroyKey.argtypes = [ctypes.c_void_p]
 
         alg = ctypes.c_void_p()
-        assert b.BCryptOpenAlgorithmProvider(ctypes.byref(alg), "AES", None, 0) == 0
+        st = b.BCryptOpenAlgorithmProvider(ctypes.byref(alg), "AES", None, 0)
+        if st != 0:
+            raise Fail(f"BCryptOpenAlgorithmProvider 失败 0x{st & 0xFFFFFFFF:08x}")
         m = f"ChainingMode{mode}".encode("utf-16-le")
-        assert b.BCryptSetProperty(alg, "ChainingMode", m, len(m), 0) == 0
+        st = b.BCryptSetProperty(alg, "ChainingMode", m, len(m), 0)
+        if st != 0:
+            raise Fail(f"BCryptSetProperty({mode}) 失败 0x{st & 0xFFFFFFFF:08x}")
         hkey = ctypes.c_void_p()
-        assert b.BCryptGenerateSymmetricKey(
-            alg, ctypes.byref(hkey), None, 0, key, len(key), 0) == 0
+        st = b.BCryptGenerateSymmetricKey(
+            alg, ctypes.byref(hkey), None, 0, key, len(key), 0)
+        if st != 0:
+            raise Fail(f"BCryptGenerateSymmetricKey 失败 0x{st & 0xFFFFFFFF:08x}"
+                       f"（key len={len(key)}, mode={mode}）")
         self._alg, self._hkey = alg, hkey
 
     def encrypt(self, data: bytes, iv: bytes | None = None) -> bytes:
-        assert len(data) % BLOCK == 0
+        if len(data) % BLOCK:
+            raise Fail(f"自检内部错误：待加密数据不是 16 的整数倍（{len(data)} 字节）")
         out = ctypes.create_string_buffer(len(data))
         n = wt.ULONG(0)
         # 同样要用可写 IV 缓冲区：CNG 会把链式值写回去
@@ -208,14 +217,19 @@ def check_dat_formats() -> str:
         }
         for name, (blob, key) in cases.items():
             path = os.path.join(tmp, f"selftest_{name}.dat")
-            with open(path, "wb") as f:
-                f.write(blob)
-            got = media.decrypt_dat(path, key)
-            _check(got is not None, f"{name} 格式解不开")
-            data, ext = got
-            _check(ext == "jpg", f"{name} 格式识别出的扩展名是 {ext}")
-            _check(data == jpeg, f"{name} 格式解密结果与原始 JPEG 不一致")
-            os.remove(path)
+            try:
+                with open(path, "wb") as f:
+                    f.write(blob)
+                got = media.decrypt_dat(path, key)
+                _check(got is not None, f"{name} 格式解不开")
+                data, ext = got
+                _check(ext == "jpg", f"{name} 格式识别出的扩展名是 {ext}")
+                _check(data == jpeg, f"{name} 格式解密结果与原始 JPEG 不一致")
+                os.remove(path)
+            except Fail:
+                raise
+            except Exception as e:      # noqa: BLE001 - 把用例名带进消息里
+                raise Fail(f"{name} 用例异常：{type(e).__name__}: {e or repr(e)}") from e
         # 没有密钥时 V2 应该诚实地解不开
         path = os.path.join(tmp, "selftest_v2_nokey.dat")
         with open(path, "wb") as f:
@@ -394,20 +408,21 @@ def run(verbose: bool = True) -> bool:
     force_utf8_stdio()
     print("=" * 66)
     print("  自检：不读微信、不联网，只验证格式解析与解密逻辑")
+    print(f"  环境：Python {platform.python_version()} / {platform.platform()}")
     print("=" * 66)
     ok = True
+    debug = os.environ.get("SELFTEST_TRACEBACK") == "1"
     for fn in CHECKS:
         try:
             name = fn()
             print(f"  [OK]   {name}")
-        except Fail as e:
-            ok = False
-            print(f"  [FAIL] {fn.__name__}: {e}")
         except Exception as e:  # noqa: BLE001
-            # 断言失败以外的情况（环境问题、代码 bug）要留完整栈，否则 CI 上只看到 exit 1
             ok = False
-            print(f"  [FAIL] {fn.__name__}: {type(e).__name__}: {e}")
-            traceback.print_exc()
+            detail = str(e) or repr(e)      # 裸 assert 抛出的 AssertionError 消息是空的
+            print(f"  [FAIL] {fn.__name__}: {type(e).__name__}: {detail}")
+            # 断言以外的情况（环境问题、代码 bug）必须留完整栈，否则 CI 上只看到 exit 1
+            if debug or not isinstance(e, Fail):
+                traceback.print_exc()
     print("=" * 66)
     print("  全部通过 ✅" if ok else "  有失败项 ❌")
     return ok
