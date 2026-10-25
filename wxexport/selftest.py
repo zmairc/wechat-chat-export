@@ -378,6 +378,39 @@ def check_image_keys() -> str:
         shutil.rmtree(root, ignore_errors=True)
 
 
+# ------------------------------------------------ 7. HEVC / wxgf 抽流与转码
+
+def check_hevc() -> str:
+    from . import hevc
+
+    # 伪造一个 wxgf 容器：头部里故意塞一个「假起始码 + NAL 类型 0」，真流在 VPS 处
+    vps = b"\x00\x00\x00\x01\x40\x01\x0c\x01\xff\xff\x01\x60"
+    body = b"wxgf" + b"\x13\x00\x02\x04\x38\x09\x60" + b"\x00\x00\x00\x01\x00" + b"\xaa" * 12
+    blob = body + vps + b"\x00\x00\x00\x01\x42\x01\x01\x60"
+    stream = hevc.extract_stream(blob)
+    _check(stream is not None, "wxgf 里没抽出 HEVC 码流")
+    _check(stream.startswith(b"\x00\x00\x00\x01\x40\x01"), "抽出的码流不是从 VPS 开始")
+    _check(stream == vps + b"\x00\x00\x00\x01\x42\x01\x01\x60", "抽出的码流内容不对")
+
+    # 没有 VPS 的容器要老实返回 None，不能瞎截一段给播放器
+    _check(hevc.extract_stream(b"wxgf" + b"\x00" * 40) is None, "没有 VPS 却返回了数据")
+    _check(hevc.extract_stream(b"not a wxgf file") is None, "非 wxgf 被当成了 HEVC")
+    _check(hevc.extract_stream(vps) == vps, "裸 Annex-B 码流应该原样返回")
+
+    # 少数文件在真 VPS 前有一段「假 VPS」（NAL 32 但 layer_id 不是 0），要跳过它
+    bogus = b"\x00\x00\x00\x01\x40\x4d\x00\x01\x40\x40"
+    real = b"\x00\x00\x00\x01\x40\x01\x0c\x01"
+    got = hevc.extract_stream(b"wxgf" + b"\x13" * 5 + bogus + real)
+    _check(got == real, "没能跳过假的 VPS，抽出的码流起点不对")
+
+    # 找不到 ffmpeg 时必须安静地返回 None，而不是抛异常
+    _check(hevc.find_ffmpeg(r"C:\definitely\not\here\ffmpeg.exe") is None,
+           "不存在的 ffmpeg 路径居然返回了值")
+    _check(hevc.to_jpeg(r"C:\definitely\not\here\ffmpeg.exe", vps) is None,
+           "ffmpeg 不存在时 to_jpeg 应当返回 None")
+    return "HEVC 抽流（VPS 定位）与 ffmpeg 缺失时的降级"
+
+
 # ------------------------------------------------------------------ 入口
 
 def force_utf8_stdio() -> None:
@@ -401,6 +434,7 @@ CHECKS = (
     check_render,
     check_helpers,
     check_image_keys,
+    check_hevc,
 )
 
 

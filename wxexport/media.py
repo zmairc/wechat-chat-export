@@ -10,6 +10,7 @@ import shutil
 import struct
 
 from .cng_aes import AesEcb
+from . import hevc
 
 V1_SIG = b"\x07\x08\x56\x31\x08\x07"
 V2_SIG = b"\x07\x08\x56\x32\x08\x07"
@@ -117,12 +118,13 @@ class MediaExporter:
     """把消息里的媒体落到 media/ 目录，并返回相对路径。"""
 
     def __init__(self, account, out_dir: str, aes_key: bytes | None = None,
-                 xor_key: int | None = None):
+                 xor_key: int | None = None, ffmpeg: str | None = None):
         self.account = account
         self.out_dir = out_dir            # 导出目录（media/ 的父目录）
         self.media_dir = os.path.join(out_dir, "media")
         self.aes_key = aes_key
         self.xor_key = xor_key
+        self.ffmpeg = ffmpeg              # 有就把 HEVC 转成 JPG，没有就只抽流 + 缩略图
         self.attach_root = os.path.join(account.path, "msg", "attach")
         self.video_root = os.path.join(account.path, "msg", "video")
         self.file_root = os.path.join(account.path, "msg", "file")
@@ -130,6 +132,7 @@ class MediaExporter:
         self._cache: dict[str, dict] = {}
         self._n = 0
         self.stats = {"image": 0, "image_raw": 0, "image_hevc": 0,
+                      "image_hevc_converted": 0, "image_hevc_thumb": 0,
                       "video": 0, "file": 0, "missing": 0}
 
     # ------------------------------------------------------------ 索引
@@ -197,17 +200,19 @@ class MediaExporter:
             got = decrypt_dat(src, self.aes_key, self.xor_key)
             if got:
                 blob, ext = got
+                if ext == "hevc":
+                    self.stats["image"] += 1
+                    self.stats["image_hevc"] += 1
+                    res = self._export_hevc(md5, blob, cands)
+                    self._cache[key] = res
+                    return res
                 stem = md5[:8] + os.path.basename(src).split("_")[-1].replace(".dat", "")
                 dst = self._unique(stem, ext)
                 with open(dst, "wb") as f:
                     f.write(blob)
-                # wxgf 是微信自家的 HEVC 封装（动图/原图），解密成功但浏览器放不了
-                playable = ext != "hevc"
-                res = {"path": self._rel(dst, self.out_dir), "decoded": playable, "ext": ext}
+                res = {"path": self._rel(dst, self.out_dir), "decoded": True, "ext": ext}
                 self._cache[key] = res
                 self.stats["image"] += 1
-                if not playable:
-                    self.stats["image_hevc"] += 1
                 return res
             # 解不开就原样保存，至少不丢数据
             dst = self._unique(md5[:8] + "_raw", "dat")
@@ -220,6 +225,59 @@ class MediaExporter:
         self.stats["missing"] += 1
         self._cache[key] = miss
         return miss
+
+    # ------------------------------------------------- HEVC / wxgf 图片
+    def _export_hevc(self, md5: str, blob: bytes, cands: list[str]) -> dict:
+        """微信的 HEVC 图片：能转码就转 JPG，不能就抽流 + 配缩略图。
+
+        浏览器渲染不了 H.265，所以哪怕只拿到缩略图，观感也比丢一个打不开的文件好；
+        原图码流始终单独保存，不丢画质。
+        """
+        stream = hevc.extract_stream(blob)
+
+        if self.ffmpeg and stream:
+            jpg = hevc.to_jpeg(self.ffmpeg, stream)
+            if jpg:
+                dst = self._unique(md5[:8] + "_hevc", "jpg")
+                with open(dst, "wb") as f:
+                    f.write(jpg)
+                self.stats["image_hevc_converted"] += 1
+                return {"path": self._rel(dst, self.out_dir), "decoded": True,
+                        "ext": "jpg", "converted": True}
+
+        # 没有 ffmpeg：存成标准 Annex-B 码流，播放器（VLC / PotPlayer）能直接打开
+        if stream:
+            dst = self._unique(md5[:8], "h265")
+            with open(dst, "wb") as f:
+                f.write(stream)
+        else:
+            dst = self._unique(md5[:8] + "_raw", "wxgf")
+            with open(dst, "wb") as f:
+                f.write(blob)
+        full_rel = self._rel(dst, self.out_dir)
+
+        thumb = self._thumbnail(md5, cands)
+        if thumb:
+            self.stats["image_hevc_thumb"] += 1
+        return {"path": thumb or full_rel, "decoded": bool(thumb),
+                "ext": "hevc", "full": full_rel}
+
+    def _thumbnail(self, md5: str, cands: list[str]) -> str | None:
+        """同一张图往往还有个 `_t.dat` 缩略图，它是普通 JPEG，拿来当预览。"""
+        for src in cands:
+            base = os.path.basename(src)
+            if "_t" not in base or not src.endswith(".dat"):
+                continue
+            got = decrypt_dat(src, self.aes_key, self.xor_key)
+            if not got:
+                continue
+            blob, ext = got
+            if ext in ("jpg", "png", "gif", "webp", "bmp"):
+                dst = self._unique(md5[:8] + "_thumb", ext)
+                with open(dst, "wb") as f:
+                    f.write(blob)
+                return self._rel(dst, self.out_dir)
+        return None
 
     # ------------------------------------------------------------ 视频
     def export_video(self, chat_hash: str, md5: str, month: str) -> dict | None:

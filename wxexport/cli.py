@@ -7,7 +7,7 @@ import os
 import sys
 import time
 
-from . import exporter, imagekey, media as media_mod, pipeline, wxstore
+from . import exporter, hevc, imagekey, media as media_mod, pipeline, wxstore
 
 
 def _hr(t=""):
@@ -207,6 +207,7 @@ def main(argv=None) -> int:
                     help="不自动派生图片密钥（解不开的图片按 .dat 原样保存）")
     ap.add_argument("--scan-media-key", action="store_true",
                     help="（实验性，较慢）离线派生失败时，扫描微信进程内存找图片密钥")
+    ap.add_argument("--ffmpeg", help="ffmpeg.exe 的路径；默认自动查找，找不到就不转 HEVC")
     ap.add_argument("--list", action="store_true", help="只列出会话，不导出")
     ap.add_argument("--rescan", action="store_true", help="忽略缓存的密钥，重新从内存提取")
     ap.add_argument("--no-open", action="store_true", help="导出后不自动打开 HTML")
@@ -258,7 +259,7 @@ def main(argv=None) -> int:
         "导出", f"{_safe_name(display)}_{stamp}")
     os.makedirs(out_dir, exist_ok=True)
 
-    aes_key, xor_key, key_source = (None, None, "")
+    ffmpeg = None
     if not args.no_media:
         aes_key, xor_key, key_source = _resolve_media_keys(args, account)
         if aes_key is None and getattr(args, "scan_media_key", False):
@@ -266,7 +267,11 @@ def main(argv=None) -> int:
             if aes_key:
                 xor_key = imagekey.guess_xor_key(imagekey.v2_samples(account.path), aes_key)
                 key_source = "内存扫描"
-    me = media_mod.MediaExporter(account, out_dir, aes_key, xor_key) if not args.no_media else None
+        ffmpeg = hevc.find_ffmpeg(args.ffmpeg)
+        if ffmpeg:
+            print(f"[*] {hevc.describe(ffmpeg)}")
+    me = (media_mod.MediaExporter(account, out_dir, aes_key, xor_key, ffmpeg)
+          if not args.no_media else None)
 
     print("[*] 读取并渲染消息 ...")
     t0 = time.time()
@@ -300,11 +305,24 @@ def main(argv=None) -> int:
               f"文件 {st['file']} 个、缺失 {st['missing']} 个")
         detail = []
         if st.get("image_hevc"):
-            detail.append(f"HEVC 封装的动图/原图 {st['image_hevc']} 张（已解密，浏览器不能直接显示）")
+            conv = st.get("image_hevc_converted", 0)
+            thumb = st.get("image_hevc_thumb", 0)
+            plain = st["image_hevc"] - conv - thumb
+            bits = []
+            if conv:
+                bits.append(f"{conv} 张已转成 JPG")
+            if thumb:
+                bits.append(f"{thumb} 张用缩略图预览、原图另存 .h265")
+            if plain:
+                bits.append(f"{plain} 张只有 .h265 原图")
+            detail.append(f"HEVC 封装 {st['image_hevc']} 张（{'；'.join(bits)}）")
         if st.get("image_raw"):
             detail.append(f"未解开 {st['image_raw']} 张")
         if detail:
             print(f"          其中 {'；'.join(detail)}")
+        if st.get("image_hevc") and not ffmpeg:
+            print("    提示：装个 ffmpeg（或用 --ffmpeg 指定路径）可以把这些 HEVC 转成 JPG，")
+            print("          现在先用缩略图预览，原图码流已按 .h265 保存，VLC / PotPlayer 能打开。")
         if st.get("image_raw"):
             if key_source:
                 print("    提示：这些图片用现有密钥解不开，可能是新版本换了格式；原文件已原样保留。")

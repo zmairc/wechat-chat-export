@@ -50,6 +50,7 @@ entries ──⑥ exporter.write_html() / write_txt()──▶ 导出\<名字>_<
 | `wxmsg.py` | 微信消息类型与 XML 结构 → 可读文本 | **重写** |
 | `media.py` | 图片 `.dat` 解密（旧 XOR / V1 / V2）、视频与附件搬运 | 复用框架，换格式判断 |
 | `imagekey.py` | 图片密钥离线派生：`uin` → AES / XOR 密钥，并用多个样本验证 | 微信专有公式，换平台要重写 |
+| `hevc.py` | 从 `wxgf` 容器抽出 Annex-B 码流；可选调 ffmpeg 把首帧转 JPG | 复用（容器换成平台的即可） |
 | `selftest.py` | 离线自检：自己造密文再解密，断言格式理解正确 | **复用套路**，加新格式断言 |
 | `cli.py` | 交互选好友、参数解析、导出流程 | 复用骨架 |
 
@@ -86,6 +87,16 @@ entries ──⑥ exporter.write_html() / write_txt()──▶ 导出\<名字>_<
   兜底可用 `md5(str(uin))[:4] == wxid 目录后缀` 反推；`wxid` 是数据目录名去掉 `_<4位hex>`
   后缀。派生结果必须用多个样本验证（AES 段解出图片魔数、尾段解出 `FF D9` / `IEND`）才算数。
 - 解出来是 `wxgf` 的（约六成）是 HEVC 封装的原图/动图，需要 ffmpeg 取帧才能显示。
+
+**`wxgf` 容器（HEVC 图片）**
+
+- 文件以 `wxgf` 开头，紧跟一段头部，之后才是标准 H.265 Annex-B 码流
+- 码流起点是 VPS（NAL 类型 32，NAL 头 `40 01`）。少数文件的头部里还有一段
+  「起始码 + NAL 字节 `40 4d`」的假 VPS，直接取第一个会多带 10 字节垃圾，
+  所以要优先挑 `nuh_layer_id == 0`（第二字节 0x01）的那个
+- 抽流后存成 `.h265`，VLC / PotPlayer / MPV 可直接播放
+- 每张原图旁边通常还有个 `_t.dat` 缩略图，是普通 JPEG，可以当预览用
+- 有 ffmpeg 时：`ffmpeg -f hevc -i pipe:0 -frames:v 1 -f mjpeg pipe:1`，走管道不留临时文件
 
 ## 4. 接一个新平台（QQ / 抖音…）怎么做
 

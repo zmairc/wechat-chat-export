@@ -56,7 +56,8 @@ def build_entries(store, item: dict, media=None, include_media: bool = True) -> 
                     if got.get("path"):
                         media_files.append({"kind": "image", "path": got["path"],
                                             "decoded": got.get("decoded", False),
-                                            "ext": got.get("ext", "")})
+                                            "ext": got.get("ext", ""),
+                                            "full": got.get("full", "")})
                 elif md["type"] == "file":
                     p = media.export_file(chat_hash, m.get("md5", ""), month,
                                           md.get("name", ""), md.get("size"))
@@ -110,6 +111,8 @@ def write_txt(entries: list[dict], title: str, subtitle: str, path: str) -> None
             if m["kind"] == "image":
                 if m["decoded"]:
                     media_note.append(m["path"])
+                    if m.get("full"):
+                        media_note.append(f"{m['full']}（原图，H.265 封装）")
                 elif m.get("ext") == "hevc":
                     media_note.append(f"{m['path']}（HEVC 封装原图，已解密保存）")
                 else:
@@ -251,9 +254,15 @@ def write_html(entries: list[dict], title: str, subtitle: str, path: str) -> Non
             if m["kind"] == "image":
                 if m["decoded"]:
                     inner.append(
-                        f'<a href="{html.escape(m["path"])}" target="_blank">'
+                        f'<a href="{html.escape(m.get("full") or m["path"])}" target="_blank">'
                         f'<img src="{html.escape(m["path"])}" loading="lazy" alt="图片"></a>'
                     )
+                    if m.get("full"):
+                        inner.append(
+                            f'<div class="raw">上面是缩略图；'
+                            f'<a href="{html.escape(m["full"])}" target="_blank">下载原图（H.265，'
+                            f'可用 VLC / PotPlayer 打开）</a></div>'
+                        )
                 elif m.get("ext") == "hevc":
                     inner.append(
                         f'<div class="raw">原图（微信 HEVC 封装，浏览器预览不了，已解密保存）：'

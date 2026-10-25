@@ -60,6 +60,7 @@ python main.py --selftest             # 离线自检，不读微信不联网
 | `--media-xor-key` | 图片尾段的单字节 XOR 密钥（十六进制，如 `0x26`）；只在手填 `--media-key` 时需要 |
 | `--no-media-key` | 不派生图片密钥，解不开的图片按 `.dat` 原样保存 |
 | `--scan-media-key` | 实验性：离线派生失败时，才去扫描微信进程内存找图片密钥（较慢） |
+| `--ffmpeg` | ffmpeg.exe 路径；默认自动查找（PATH、`tools\ffmpeg.exe`、常见安装位置） |
 | `--work` | 工作目录（密钥缓存 + 解密后的库），默认 `work\` |
 | `--rescan` | 忽略缓存，重新从微信内存取一次密钥 |
 | `--no-open` | 导完不自动打开 HTML |
@@ -83,14 +84,15 @@ python main.py --selftest             # 离线自检，不读微信不联网
    其次系统 Node.js 的 zlib，都没有则跳过）。
 5. **落盘**：图片走 `.dat` 解密（旧 XOR / V1 / V2）。V2 的密钥不需要读进程内存——它是
    `md5(uin + wxid)[:16]` 和 `uin & 0xFF`，其中 `uin` 能从微信的 MMKV 统计文件名里读到，
-   且必须用多个图片样本验证通过才会采用。视频从 `msg\video\` 取，附件从 `msg\file\`
-   按文件名 / 消息内 md5 / 文件大小多路匹配。
+   且必须用多个图片样本验证通过才会采用。解出来是 HEVC 的（`wxgf` 容器）再走一步：
+   抽成标准 `.h265` + 配缩略图，有 ffmpeg 就转成 JPG。视频从 `msg\video\` 取，
+   附件从 `msg\file\` 按文件名 / 消息内 md5 / 文件大小多路匹配。
 
 ## 已知限制
 
 | 限制 | 说明 |
 |---|---|
-| **HEVC / wxgf 原图** | 一部分图片（实测约六成）在微信里是 HEVC 封装的动图或原图。解密没问题、文件完整保存为 `.hevc`，但浏览器不能直接显示，需要转码（ffmpeg）才能看。 |
+| **HEVC / wxgf 原图** | 一部分图片（实测约六成）在微信里是 HEVC 封装的原图/动图，浏览器渲染不了。工具会自动抽出 H.265 码流存成 `.h265`、并用同目录的 `_t` 缩略图做预览；本机有 ffmpeg（或 `--ffmpeg` 指定）时直接转成 JPG，画面就是完整的。 |
 | 语音 / 表情 | 微信 4.x 本地基本不落盘（`Voice`/`Emoji` 目录为空），只保留 `[语音 3"]`、`[表情]` 占位 |
 | 系统版本 | 仅支持 Windows + 微信 4.x；微信 3.x（`WeChat Files\Msg\MSG*.db`）格式不同，不支持 |
 | 账号范围 | 只能导出本机已登录账号；密钥缓存后可离线重复导出 |
@@ -140,6 +142,7 @@ wxexport/
   zstd_codec.py         zstd 解压（zstandard / Node.js）
   media.py              图片 .dat 解密、视频/文件搬运
   imagekey.py           图片密钥离线派生（uin → AES / XOR 密钥 + 样本验证）
+  hevc.py               HEVC/wxgf 抽流与转码（有 ffmpeg 才转，没有就抽流 + 缩略图）
   exporter.py           HTML / TXT 渲染
   selftest.py           离线自检
   mediakey.py           [实验性] 内存里找图片密钥
@@ -165,9 +168,11 @@ A：纯文字几秒到几十秒；带媒体取决于附件大小（实测 5500 �
 **Q：会封号吗？**
 A：工具只读本机数据库文件和微信进程内存，不修改微信行为、不接触服务器通信。
 
-**Q：图片导出成了 `.hevc`，打不开？**
-A：那是微信用 HEVC 封装的原图/动图，解密已经成功、数据是完整的。用支持 HEVC 的播放器
-（PotPlayer、VLC）打开，或 `ffmpeg -i 图片.hevc 图片.jpg` 转一张出来即可；HTML 里会给出下载链接。
+**Q：图片导出成了 `.hevc` / `.h265`，打不开？**
+A：那是微信用 HEVC 封装的原图/动图。现在默认会：①用同一张图的缩略图做预览，HTML 里能直接看；
+②把原图抽成标准 `.h265`（VLC、PotPlayer、MPV 都能播）。想直接在网页里看到清晰原图，
+装个 [ffmpeg](https://ffmpeg.org/download.html) 放到 PATH（或 `tools\ffmpeg.exe`，或 `--ffmpeg` 指路），
+重跑一次就会自动转成 JPG。
 
 **Q：导出的 HTML 能发给别人吗？**
 A：可以，但里面是你自己的聊天内容；`media/` 目录要一起带上，页面里的图片是相对路径。
