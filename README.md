@@ -111,6 +111,10 @@ python -m unittest discover -s tests   # 同一批断言，CI 里跑的就是这
 自检自己造密文再解密，**不读微信、不联网、不需要第三方库**，读代码时也能直接验证它确实只是在做解密和搬运。
 CI（`.github/workflows/ci.yml`）在 Windows + Python 3.11~3.13 上跑这套自检。
 
+想接着往下做（或者照它给 QQ / 抖音 之类写一个导出工具）？先看
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)——数据流、哪些模块能直接复用、哪些是微信专属
+必须重写、以及作者踩过的坑，都在里面。
+
 ## 目录结构
 
 ```
@@ -133,6 +137,7 @@ wxexport/
   mediakey.py           [实验性] 内存里找图片密钥
 tests/                  unittest
 .github/workflows/      CI
+docs/ARCHITECTURE.md    架构说明与「接新平台」指南
 work/                   密钥缓存 + 解密后的数据库（敏感，可删）
 导出/                   导出结果
 ```
