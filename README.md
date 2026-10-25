@@ -32,7 +32,7 @@
 ## 快速开始
 
 1. **准备**：Windows 10/11 + Python 3.10+（[下载](https://www.python.org/downloads/windows/)，安装时勾选 *Add Python to PATH*）
-2. **下载**：到 [Releases](https://github.com/zmairc/wechat-chat-export/releases/latest) 下载 `wxchat-export-v0.1.0.zip` 解压（也可以用 `Code → Download ZIP` 或 `git clone`）
+2. **下载**：到 [Releases](https://github.com/zmairc/wechat-chat-export/releases/latest) 下载最新的 `wxchat-export-*.zip` 解压（也可以用 `Code → Download ZIP` 或 `git clone`）
 3. **打开并登录微信**（微信 4.1 之后，数据库密钥只存在于运行中的微信进程内存里，关掉就拿不到）
 4. **双击 `一键导出.bat`**，按提示选好友/群即可
 
@@ -131,6 +131,10 @@ CI（`.github/workflows/ci.yml`）在 Windows + Python 3.11~3.13 上跑这套自
 GitHub 上同类项目的对比、可以借鉴的算法（尤其图片密钥的离线派生）见
 [`docs/REFERENCES.md`](docs/REFERENCES.md)。
 
+想把这套东西扩展到 QQ / 飞书 / 钉钉 / 抖音，或者做成手机 App？先读
+[`docs/LESSONS.md`](docs/LESSONS.md)（所有踩过的坑）和
+[`docs/ROADMAP.md`](docs/ROADMAP.md)（多平台与移动端路线图、平台可行性矩阵）。
+
 ## 目录结构
 
 ```
@@ -160,6 +164,8 @@ tools/
   demo_export.py        生成虚构的演示页面（用来截 README 截图）
 .github/workflows/      CI
 docs/ARCHITECTURE.md    架构说明与「接新平台」指南
+docs/LESSONS.md         所有踩过的坑（换平台前必读）
+docs/ROADMAP.md         多平台 + 移动端的可行性矩阵与路线图
 docs/REFERENCES.md      同类项目调研、可借鉴的算法与实测结论
 work/                   密钥缓存 + 解密后的数据库（敏感，可删）
 导出/                   导出结果
