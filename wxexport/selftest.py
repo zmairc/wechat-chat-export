@@ -411,6 +411,92 @@ def check_hevc() -> str:
     return "HEVC 抽流（VPS 定位）与 ffmpeg 缺失时的降级"
 
 
+# --------------------------------------------- 8. CSV 导出与密钥缓存加密
+
+def _sample_entries():
+    d = __import__("datetime").datetime(2026, 10, 19, 21, 46, 5)
+    return [
+        {"time": 0, "dt": d, "sender": "我", "is_self": True, "kind": "text",
+         "text": '含逗号, 引号"和换行\n第二行', "quote": "", "media": []},
+        {"time": 0, "dt": d, "sender": "杜霖", "is_self": False, "kind": "image",
+         "text": "[图片]", "quote": "原文",
+         "media": [{"kind": "image", "path": "media/00001_a.jpg", "decoded": True,
+                    "ext": "jpg", "full": "media/00002_a.h265"}]},
+        {"time": 0, "dt": d, "sender": "", "is_self": False, "kind": "system",
+         "text": "你撤回了一条消息", "quote": "", "media": []},
+    ]
+
+
+def check_csv_export() -> str:
+    from . import exporter
+
+    tmp = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "work", "tmp"))
+    os.makedirs(tmp, exist_ok=True)
+    path = os.path.join(tmp, "selftest_chat.csv")
+    try:
+        exporter.write_csv(_sample_entries(), "标题", "副标题", path)
+        raw = open(path, "rb").read()
+        _check(raw.startswith(b"\xef\xbb\xbf"), "CSV 缺少 UTF-8 BOM，Excel 打开会乱码")
+        text = raw.decode("utf-8-sig")
+        rows = __import__("csv").reader(text.splitlines())
+        head = next(rows)
+        _check(head == ["时间", "发送人", "是否本人", "类型", "内容", "引用", "附件"],
+               f"CSV 表头不对：{head}")
+        first = next(rows)
+        _check(first[0] == "2026-10-19 21:46:05", f"时间列不对：{first[0]}")
+        _check(first[2] == "是" and first[3] == "文本", f"本人/类型列不对：{first[:4]}")
+        _check("换行" in first[4], "内容里的换行没保住")
+        second = next(rows)
+        _check(second[5] == "原文" and "media/00001_a.jpg" in second[6],
+               f"引用/附件列不对：{second[5:]}")
+        _check("media/00002_a.h265" in second[6], "原图路径没进 CSV")
+        return "CSV 导出（BOM / 表头 / 引号换行 / 附件列）"
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def check_key_cache() -> str:
+    from . import dpapi, pipeline
+
+    class _Db:
+        def __init__(self, rel):
+            self.rel = rel
+
+    tmp = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "work", "tmp"))
+    os.makedirs(tmp, exist_ok=True)
+    path = os.path.join(tmp, "selftest_keys.json")
+    keys = {"message/message_0.db": bytes(range(32))}
+    dbs = [_Db("message/message_0.db")]
+    try:
+        # 加密存储（DPAPI 不可用时自动退化成明文，两种情况都要能读回来）
+        how = pipeline.cache_keys(path, keys)
+        _check(how in ("dpapi", "plain"), f"缓存方式异常：{how}")
+        _check(pipeline.load_cached_keys(path, dbs) == keys, f"{how} 缓存读回来不一致")
+
+        if dpapi.available():
+            blob = dpapi.protect(b"secret")
+            _check(blob and blob[:4] == b"\x01\x00\x00\x00", "DPAPI 输出不像是标准 blob")
+            _check(dpapi.unprotect(blob) == b"secret", "DPAPI 解密结果不一致")
+            _check(dpapi.unprotect(blob[:-1] + bytes([blob[-1] ^ 0xFF])) is None,
+                   "被篡改的 DPAPI 密文居然解开了")
+
+        # 老版本缓存（直接摊平明文）要能继续读
+        import json as _json
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump({k: v.hex() for k, v in keys.items()}, f)
+        _check(pipeline.load_cached_keys(path, dbs) == keys, "老格式缓存读不回来了")
+
+        # 密文坏掉时应当当成“没有缓存”，而不是抛异常
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump({"v": 2, "dpapi": "bm90LWEtcmVhbC1ibG9i"}, f)
+        _check(pipeline.load_cached_keys(path, dbs) == {}, "坏掉的缓存没有被忽略")
+        return "密钥缓存（DPAPI 加密 / 老格式兼容 / 损坏容错）"
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
+
+
 # ------------------------------------------------------------------ 入口
 
 def force_utf8_stdio() -> None:
@@ -435,6 +521,8 @@ CHECKS = (
     check_helpers,
     check_image_keys,
     check_hevc,
+    check_csv_export,
+    check_key_cache,
 )
 
 

@@ -1,7 +1,8 @@
-"""把一段聊天记录导出成 HTML（可搜索、可打印）和 TXT。"""
+"""把一段聊天记录导出成 HTML（可搜索、可打印）、TXT 和 CSV。"""
 
 from __future__ import annotations
 
+import csv
 import html
 import os
 import time
@@ -134,6 +135,65 @@ def write_txt(entries: list[dict], title: str, subtitle: str, path: str) -> None
         lines.append("")
     with open(path, "w", encoding="utf-8-sig") as f:
         f.write("\n".join(lines))
+
+
+# ------------------------------------------------------------------- CSV
+
+KIND_LABELS = {
+    "text": "文本",
+    "image": "图片",
+    "voice": "语音",
+    "video": "视频",
+    "sticker": "表情",
+    "file": "文件",
+    "link": "链接",
+    "quote": "引用",
+    "transfer": "转账",
+    "redpacket": "红包",
+    "call": "通话",
+    "location": "位置",
+    "card": "名片",
+    "miniprogram": "小程序",
+    "chatrecord": "聊天记录",
+    "system": "系统",
+}
+
+
+def _csv_media(e: dict) -> str:
+    """把附件列压成一行：`图片 media/00001_x.jpg | 视频 media/00002_x.mp4`。"""
+    parts = []
+    for m in e.get("media", []):
+        if m["kind"] == "image":
+            label = "图片"
+            if not m.get("decoded"):
+                label = "图片(未解密)" if m.get("ext") != "hevc" else "图片(HEVC)"
+            parts.append(f"{label} {m['path']}")
+            if m.get("full"):
+                parts.append(f"原图 {m['full']}")
+        elif m["kind"] == "file":
+            parts.append(f"附件 {m.get('name', '')} {m['path']}")
+        elif m["kind"] == "video":
+            parts.append(f"视频 {m['path']}" + ("(仅封面)" if m.get("thumb_only") else ""))
+        elif m["kind"] == "link":
+            parts.append(f"链接 {m.get('url', '')}")
+    return " | ".join(p for p in parts if p.strip())
+
+
+def write_csv(entries: list[dict], title: str, subtitle: str, path: str) -> None:
+    """逐条消息一行的 CSV，UTF-8 with BOM，Excel 双击就能正常打开。"""
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(["时间", "发送人", "是否本人", "类型", "内容", "引用", "附件"])
+        for e in entries:
+            w.writerow([
+                e["dt"].strftime("%Y-%m-%d %H:%M:%S"),
+                e["sender"],
+                "是" if e["is_self"] else "否",
+                KIND_LABELS.get(e["kind"], e["kind"]),
+                e["text"],
+                e.get("quote", ""),
+                _csv_media(e),
+            ])
 
 
 # ------------------------------------------------------------------ HTML

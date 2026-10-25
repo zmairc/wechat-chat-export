@@ -24,6 +24,9 @@ venv/
 Thumbs.db
 desktop.ini
 
+# 文档里由脚本生成的演示页面（只提交截图）
+docs/demo/
+
 # 发布/下载用的 zip（Release 里单独上传）
 *.zip
 

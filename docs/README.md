@@ -2,18 +2,25 @@
 
 这里是给 README 用的图片资源目录。
 
-**加一张界面截图**（对这个项目帮助很大）：
+## 界面截图 `screenshot.png`
 
-1. 双击打开任意一次导出里的 `chat.html`
-2. 按 `Win + Shift + S` 截取聊天窗口那一块
-3. 保存为 `docs/screenshot.png`
-4. 打开根目录的 `README.md`，把这段的注释符号删掉：
+**不要**拿真实聊天记录截图——这个仓库是公开的。正确做法是用虚构数据生成一个页面：
 
-   ```html
-   <!-- 截图：把图片放到 docs/screenshot.png 后取消注释
-   ![界面截图](docs/screenshot.png)
-   -->
-   ```
+```bash
+# 1. 生成演示页面（数据全写死在脚本里，不读微信、不联网）
+python tools/demo_export.py                       # 输出到 docs/demo/chat.html
 
-建议截图里**不要出现真实好友的姓名和聊天内容**（打码或换一个测试会话），
-这个仓库是公开的，别把自己的隐私顺手发出去。
+# 2. 用 Windows 自带的 Edge 无头模式截图
+"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" \
+  --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
+  --window-size=1280,900 \
+  --screenshot=docs/screenshot.png \
+  "file:///<项目绝对路径>/docs/demo/chat.html"
+```
+
+- `--window-size` 的高度要略大于页面内容，否则底部会被裁掉；改完示例数据先看一眼
+- 想改内容就动 `tools/demo_export.py` 里的 `_entries()`
+- `docs/demo/` 是生成物（已忽略），只需要提交 `screenshot.png`
+
+也可以打开真实导出的 `chat.html` 手动截图，但**务必打码**，
+别把好友姓名和聊天内容带进公开仓库。

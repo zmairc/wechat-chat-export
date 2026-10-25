@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import string
 import time
 
-from . import keyextract, keyscan, sqlcipher
+from . import dpapi, keyextract, keyscan, sqlcipher
 
 
 # ----------------------------------------------------------- 数据目录定位
@@ -157,31 +158,69 @@ def keys_file(work_dir: str, account: Account) -> str:
     return os.path.join(work_dir, f"keys_{account.name}.json")
 
 
-def cache_keys(path: str, keys: dict[str, bytes]) -> None:
+def cache_keys(path: str, keys: dict[str, bytes], encrypt: bool = True) -> str:
+    """写密钥缓存。能用 DPAPI 就加密，返回实际使用的存储方式（'dpapi' / 'plain'）。"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    data = {rel: k.hex() for rel, k in keys.items()}
+    payload = {rel: k.hex() for rel, k in keys.items()}
+    blob = dpapi.protect(json.dumps(payload).encode("utf-8")) if encrypt else None
+    if blob:
+        doc = {"v": 2, "dpapi": base64.b64encode(blob).decode("ascii")}
+    else:
+        doc = {"v": 2, "keys": payload}
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(doc, f, indent=2)
+    return "dpapi" if blob else "plain"
+
+
+def _decode_cache(doc) -> dict:
+    """解析缓存文件，兼容三种写法：DPAPI 密文 / 明文 keys 字段 / 老版本直接摊平。"""
+    if not isinstance(doc, dict):
+        return {}
+    if "dpapi" in doc:
+        try:
+            blob = base64.b64decode(doc["dpapi"])
+        except (TypeError, ValueError):
+            return {}
+        raw = dpapi.unprotect(blob)
+        if not raw:
+            return {}
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(doc, dict):
+            return {}
+    if isinstance(doc.get("keys"), dict):
+        return doc["keys"]
+    # 老格式：{相对路径: 十六进制密钥}
+    return {k: v for k, v in doc.items() if isinstance(v, str)}
 
 
 def load_cached_keys(path: str, dbs) -> dict[str, bytes]:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+            doc = json.load(f)
     except (OSError, json.JSONDecodeError):
         return {}
-    by_salt = {db.salt_hex: db for db in dbs}
+    raw = _decode_cache(doc)
     out = {}
     for rel, hexkey in raw.items():
         try:
-            k = bytes.fromhex(hexkey)
-        except ValueError:
+            out[rel] = bytes.fromhex(hexkey)
+        except (TypeError, ValueError):
             continue
-        db = by_salt.get(rel)  # 兼容：key 里也可能存 salt
-        out[rel] = k
     # 只保留当前仍然存在的库
     valid = {db.rel for db in dbs}
     return {rel: k for rel, k in out.items() if rel in valid}
+
+
+def cache_is_encrypted(path: str) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(doc, dict) and "dpapi" in doc
 
 
 def get_keys(account: Account, work_dir: str, verbose=True,
@@ -208,10 +247,16 @@ def get_keys(account: Account, work_dir: str, verbose=True,
         fresh = keyextract.find_keys(missing, verbose=verbose)
         keys.update(fresh)
         if keys:
-            cache_keys(cache, keys)
+            how = cache_keys(cache, keys)
+            if verbose and how == "dpapi":
+                print("    密钥已缓存，并用 DPAPI 加密（换账户或换机器都解不开）")
     else:
         if verbose:
             print(f"[*] 使用已缓存的密钥（{len(keys)} 个库）")
+        if keys and not cache_is_encrypted(cache):
+            # 顺手把老版本的明文缓存升级成 DPAPI 加密
+            if cache_keys(cache, keys) == "dpapi" and verbose:
+                print("    已把明文密钥缓存升级为 DPAPI 加密")
     return keys
 
 

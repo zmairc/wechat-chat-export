@@ -199,7 +199,7 @@ def main(argv=None) -> int:
     ap.add_argument("--account", "-a", help="要导出的微信账号（wxid），默认自动选择")
     ap.add_argument("--out", "-o", help="导出到哪个目录（默认 导出/<名字>_<时间>）")
     ap.add_argument("--work", help="工作目录（放密钥缓存和解密后的数据库）")
-    ap.add_argument("--format", default="html,txt", help="导出格式，逗号分隔：html,txt")
+    ap.add_argument("--format", default="html,txt", help="导出格式，逗号分隔：html,txt,csv")
     ap.add_argument("--no-media", action="store_true", help="不导出图片/视频/文件，只导文字")
     ap.add_argument("--media-key", help="图片解密用的 AES-128 密钥（32 位十六进制）；默认自动离线派生")
     ap.add_argument("--media-xor-key", help="图片尾段的单字节 XOR 密钥（十六进制，如 0x26）；一般不用填")
@@ -292,6 +292,10 @@ def main(argv=None) -> int:
     if "txt" in formats:
         path = os.path.join(out_dir, "chat.txt")
         exporter.write_txt(entries, title, subtitle, path)
+        outputs.append(path)
+    if "csv" in formats:
+        path = os.path.join(out_dir, "chat.csv")
+        exporter.write_csv(entries, title, subtitle, path)
         outputs.append(path)
 
     print("")
