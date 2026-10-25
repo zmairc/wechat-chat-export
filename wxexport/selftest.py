@@ -18,8 +18,9 @@ import os
 import shutil
 import struct
 import sys
+import traceback
 
-from . import media, sqlcipher, wxmsg
+from . import imagekey, media, sqlcipher, wxmsg
 from .cng_aes import AesCbc, AesEcb
 
 BLOCK = 16
@@ -298,6 +299,71 @@ def check_helpers() -> str:
     return "辅助函数（账号解析 / 对齐 / 大小格式化 / zstd 魔数）"
 
 
+# ------------------------------------------- 6. 图片密钥离线派生（imagekey）
+
+def check_image_keys() -> str:
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "work", "tmp"))
+    kv_dir = os.path.join(root, "selftest_kv")
+    acc_dir = os.path.join(root, "selftest_acc", "wxid_test_c23a")
+    img_dir = os.path.join(acc_dir, "msg", "attach", "abc123", "Img")
+    uin = 123456789
+    try:
+        # ---- 公式本身：md5(f"{uin}{wxid}")[:16] + uin & 0xFF
+        want = hashlib.md5(f"{uin}wxid_test".encode()).hexdigest()[:16].encode()
+        xor_key, aes_key = imagekey.derive(uin, "wxid_test")
+        _check(aes_key == want, f"派生出的 aes_key 不对：{aes_key!r}")
+        _check(xor_key == (uin & 0xFF) == 0x15, f"xor_key 应为 uin & 0xFF，实际 {xor_key:#x}")
+
+        # ---- 目录名清洗与后缀
+        _check(imagekey.clean_wxid("wxid_abc_c23a") == "wxid_abc", "clean_wxid 没去掉 _c23a 后缀")
+        _check(imagekey.suffix_of("wxid_abc_c23a") == "c23a", "suffix_of 取错后缀")
+        _check("wxid_abc" in imagekey.wxid_variants("wxid_abc_c23a"), "候选 wxid 里没有去后缀的写法")
+
+        # ---- kvcomm 文件名里取 uin（key_0_ 这类占位项必须跳过）
+        os.makedirs(kv_dir, exist_ok=True)
+        for name in (f"key_{uin}_1_2_3_3600_ready.statistic", "key_0_9_9_9_input.statistic"):
+            with open(os.path.join(kv_dir, name), "wb"):
+                pass
+        _check(imagekey.uins_from_kvcomm([kv_dir]) == [uin],
+               f"uin 提取不对：{imagekey.uins_from_kvcomm([kv_dir])}")
+
+        # ---- 造一个账号目录 + 三张 V2 图片，走完整 discover 流程
+        os.makedirs(img_dir, exist_ok=True)
+        jpeg = _make_jpeg(8192)
+        for i in range(3):
+            with open(os.path.join(img_dir, f"aa{i}.dat"), "wb") as f:
+                f.write(_make_v2(jpeg, aes_key, xor_key=xor_key))
+
+        orig_dirs = imagekey.kvcomm_dirs
+        imagekey.kvcomm_dirs = lambda: [kv_dir]   # 只认这份假的 kvcomm
+        try:
+            info = imagekey.find(acc_dir, allow_bruteforce=False)
+        finally:
+            imagekey.kvcomm_dirs = orig_dirs
+        _check(info is not None, "在自造的账号目录上没能派生图片密钥")
+        _check(info["uin"] == uin and info["wxid"] == "wxid_test", f"派生结果不对：{info}")
+        _check(info["verified"] == info["samples"] == 3,
+               f"样本验证数不对：{info['verified']}/{info['samples']}")
+
+        sample = os.path.join(img_dir, "aa0.dat")
+        got = media.decrypt_dat(sample, info["aes_key"], info["xor_key"])
+        _check(got is not None and got[0] == jpeg, "用派生密钥没能还原出原始 JPEG")
+        _check(got[1] == "jpg", f"识别出的扩展名是 {got[1]}")
+
+        # ---- 尾段 XOR 密钥必须真的用上：用错密钥时尾部会坏
+        wrong = media.decrypt_dat(sample, info["aes_key"], 0x88)
+        _check(wrong is not None, "换了错的 xor_key 就连头都解不开了？")
+        _check(wrong[0] != jpeg and not wrong[0].endswith(b"\xff\xd9"),
+               "xor_key 没生效——换了密钥居然还原出一模一样的结果")
+
+        # ---- 只给 AES 密钥时，能从文件尾反推出 xor_key
+        guessed = imagekey.guess_xor_key([sample], info["aes_key"])
+        _check(guessed == info["xor_key"], f"反推出的 xor_key 是 {guessed}，应为 {info['xor_key']}")
+        return "图片密钥派生（含尾段 XOR 密钥与文件尾反推）"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 # ------------------------------------------------------------------ 入口
 
 def force_utf8_stdio() -> None:
@@ -320,6 +386,7 @@ CHECKS = (
     check_dat_formats,
     check_render,
     check_helpers,
+    check_image_keys,
 )
 
 
@@ -333,9 +400,14 @@ def run(verbose: bool = True) -> bool:
         try:
             name = fn()
             print(f"  [OK]   {name}")
-        except Exception as e:  # noqa: BLE001
+        except Fail as e:
             ok = False
             print(f"  [FAIL] {fn.__name__}: {e}")
+        except Exception as e:  # noqa: BLE001
+            # 断言失败以外的情况（环境问题、代码 bug）要留完整栈，否则 CI 上只看到 exit 1
+            ok = False
+            print(f"  [FAIL] {fn.__name__}: {type(e).__name__}: {e}")
+            traceback.print_exc()
     print("=" * 66)
     print("  全部通过 ✅" if ok else "  有失败项 ❌")
     return ok

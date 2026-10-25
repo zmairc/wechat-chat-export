@@ -58,18 +58,23 @@ def detect_xor_key(data: bytes) -> int | None:
     return None
 
 
-def decrypt_dat(path: str, aes_key: bytes | None = None) -> tuple[bytes, str] | None:
-    """解密 .dat，返回 (原始图片字节, 扩展名)；无法解密时返回 None。"""
-    with open(path, "rb") as f:
-        data = f.read()
+def decrypt_dat_blob(data: bytes, aes_key: bytes | None = None,
+                     xor_key: int | None = None) -> tuple[bytes, str] | None:
+    """解密一段 .dat 内容，返回 (原始图片字节, 扩展名)；无法解密时返回 None。
+
+    V1 用固定密钥；V2 的 AES 段密钥因账号而异，尾段的单字节 XOR 密钥是
+    ``uin & 0xFF``（见 imagekey.py），拿不到时退回历史常量。
+    """
     if len(data) < 32:
         return None
     sig = data[:6]
 
     if sig in (V1_SIG, V2_SIG):
-        key = V1_KEY if sig == V1_SIG else aes_key
+        is_v2 = sig == V2_SIG
+        key = aes_key if is_v2 else V1_KEY
         if not key:
             return None
+        tail_key = (xor_key if xor_key is not None else V2_XOR) if is_v2 else V2_XOR
         aes_size, xor_size = struct.unpack_from("<II", data, 6)
         aligned = _align16(aes_size)
         if 15 + aligned > len(data):
@@ -86,7 +91,7 @@ def decrypt_dat(path: str, aes_key: bytes | None = None) -> tuple[bytes, str] | 
         tail_idx = len(rest) - xor_size
         raw_part = rest[:tail_idx] if tail_idx > 0 else b""
         xor_part = rest[tail_idx:] if tail_idx > 0 else rest
-        out = plain + raw_part + bytes(b ^ V2_XOR for b in xor_part)
+        out = plain + raw_part + bytes(b ^ tail_key for b in xor_part)
         ext = _sniff(out) or ext
         return out, ext
 
@@ -101,21 +106,31 @@ def decrypt_dat(path: str, aes_key: bytes | None = None) -> tuple[bytes, str] | 
     return out, ext
 
 
+def decrypt_dat(path: str, aes_key: bytes | None = None,
+                xor_key: int | None = None) -> tuple[bytes, str] | None:
+    """解密 .dat 文件，返回 (原始图片字节, 扩展名)；无法解密时返回 None。"""
+    with open(path, "rb") as f:
+        return decrypt_dat_blob(f.read(), aes_key, xor_key)
+
+
 class MediaExporter:
     """把消息里的媒体落到 media/ 目录，并返回相对路径。"""
 
-    def __init__(self, account, out_dir: str, aes_key: bytes | None = None):
+    def __init__(self, account, out_dir: str, aes_key: bytes | None = None,
+                 xor_key: int | None = None):
         self.account = account
         self.out_dir = out_dir            # 导出目录（media/ 的父目录）
         self.media_dir = os.path.join(out_dir, "media")
         self.aes_key = aes_key
+        self.xor_key = xor_key
         self.attach_root = os.path.join(account.path, "msg", "attach")
         self.video_root = os.path.join(account.path, "msg", "video")
         self.file_root = os.path.join(account.path, "msg", "file")
         self._index: dict[str, list[str]] = {}
-        self._cache: dict[str, str | None] = {}
+        self._cache: dict[str, dict] = {}
         self._n = 0
-        self.stats = {"image": 0, "image_raw": 0, "video": 0, "file": 0, "missing": 0}
+        self.stats = {"image": 0, "image_raw": 0, "image_hevc": 0,
+                      "video": 0, "file": 0, "missing": 0}
 
     # ------------------------------------------------------------ 索引
     def _chat_dir(self, chat_hash: str) -> str:
@@ -157,14 +172,14 @@ class MediaExporter:
 
     # ------------------------------------------------------------ 图片
     def export_image(self, chat_hash: str, md5: str, month: str) -> dict:
-        """返回 {'path': 相对路径, 'decoded': bool, 'ext': str}"""
+        """返回 {'path': 相对路径, 'decoded': 能否直接在浏览器显示, 'ext': 扩展名}"""
         key = f"img:{chat_hash}:{md5}"
         if key in self._cache:
-            p = self._cache[key]
-            return {"path": p, "decoded": bool(p and p.endswith((".jpg", ".png", ".gif", ".webp", ".bmp")))}
+            return self._cache[key]
+        miss = {"path": None, "decoded": False, "ext": ""}
         if not md5:
             self.stats["missing"] += 1
-            return {"path": None, "decoded": False}
+            return miss
 
         cands = self._find_by_md5(chat_hash, md5)
         # 优先完整图，其次缩略图
@@ -172,34 +187,39 @@ class MediaExporter:
 
         for src in cands:
             if not src.endswith(".dat"):
-                dst = self._unique(md5[:8], os.path.splitext(src)[1].lstrip("."))
+                ext = os.path.splitext(src)[1].lstrip(".").lower()
+                dst = self._unique(md5[:8], ext)
                 shutil.copyfile(src, dst)
-                rel = self._rel(dst, self.out_dir)
-                self._cache[key] = rel
+                res = {"path": self._rel(dst, self.out_dir), "decoded": True, "ext": ext}
+                self._cache[key] = res
                 self.stats["image"] += 1
-                return {"path": rel, "decoded": True}
-            got = decrypt_dat(src, self.aes_key)
+                return res
+            got = decrypt_dat(src, self.aes_key, self.xor_key)
             if got:
                 blob, ext = got
                 stem = md5[:8] + os.path.basename(src).split("_")[-1].replace(".dat", "")
                 dst = self._unique(stem, ext)
                 with open(dst, "wb") as f:
                     f.write(blob)
-                rel = self._rel(dst, self.out_dir)
-                self._cache[key] = rel
+                # wxgf 是微信自家的 HEVC 封装（动图/原图），解密成功但浏览器放不了
+                playable = ext != "hevc"
+                res = {"path": self._rel(dst, self.out_dir), "decoded": playable, "ext": ext}
+                self._cache[key] = res
                 self.stats["image"] += 1
-                return {"path": rel, "decoded": True}
+                if not playable:
+                    self.stats["image_hevc"] += 1
+                return res
             # 解不开就原样保存，至少不丢数据
             dst = self._unique(md5[:8] + "_raw", "dat")
             shutil.copyfile(src, dst)
             self.stats["image_raw"] += 1
-            rel = self._rel(dst, self.out_dir)
-            self._cache[key] = rel
-            return {"path": rel, "decoded": False}
+            res = {"path": self._rel(dst, self.out_dir), "decoded": False, "ext": "dat"}
+            self._cache[key] = res
+            return res
 
         self.stats["missing"] += 1
-        self._cache[key] = None
-        return {"path": None, "decoded": False}
+        self._cache[key] = miss
+        return miss
 
     # ------------------------------------------------------------ 视频
     def export_video(self, chat_hash: str, md5: str, month: str) -> dict | None:

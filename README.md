@@ -56,8 +56,10 @@ python main.py --selftest             # 离线自检，不读微信不联网
 | `--out / -o` | 输出目录，默认 `导出\<名字>_<时间>` |
 | `--format` | `html,txt`（默认两个都出） |
 | `--no-media` | 不导出图片/视频/文件 |
-| `--media-key` | 图片解密密钥（32 位十六进制），见「已知限制」 |
-| `--scan-media-key` | 实验性：扫描内存尝试自动找图片密钥（较慢，可能失败） |
+| `--media-key` | 图片解密用的 AES-128 密钥（32 位十六进制）；一般不用填，默认自动离线派生 |
+| `--media-xor-key` | 图片尾段的单字节 XOR 密钥（十六进制，如 `0x26`）；只在手填 `--media-key` 时需要 |
+| `--no-media-key` | 不派生图片密钥，解不开的图片按 `.dat` 原样保存 |
+| `--scan-media-key` | 实验性：离线派生失败时，才去扫描微信进程内存找图片密钥（较慢） |
 | `--work` | 工作目录（密钥缓存 + 解密后的库），默认 `work\` |
 | `--rescan` | 忽略缓存，重新从微信内存取一次密钥 |
 | `--no-open` | 导完不自动打开 HTML |
@@ -79,14 +81,16 @@ python main.py --selftest             # 离线自检，不读微信不联网
 4. **读消息**：每个会话是一张 `Msg_<md5(用户名)>` 表，同一人分散在多个 `message_N.db`
    时自动合并；`WCDB_CT_*` 标记为压缩的字段用 zstd 解压（优先 `zstandard`，
    其次系统 Node.js 的 zlib，都没有则跳过）。
-5. **落盘**：图片走 `.dat` 解密（旧 XOR / V1 / V2），视频从 `msg\video\` 取，
-   附件从 `msg\file\` 按文件名 / 消息内 md5 / 文件大小多路匹配。
+5. **落盘**：图片走 `.dat` 解密（旧 XOR / V1 / V2）。V2 的密钥不需要读进程内存——它是
+   `md5(uin + wxid)[:16]` 和 `uin & 0xFF`，其中 `uin` 能从微信的 MMKV 统计文件名里读到，
+   且必须用多个图片样本验证通过才会采用。视频从 `msg\video\` 取，附件从 `msg\file\`
+   按文件名 / 消息内 md5 / 文件大小多路匹配。
 
 ## 已知限制
 
 | 限制 | 说明 |
 |---|---|
-| **V2 格式图片** | 微信 4.1+ 的图片（文件头 `07 08 56 32`）前 1024 字节是 AES-128-ECB 加密，密钥只在内存里且非常规格式。没有密钥时图片会**原样保存为 `.dat`**（不丢数据），HTML 里提示「需密钥」。有密钥时用 `--media-key` 可全解开；旧格式（XOR / V1）图片可自动解开。 |
+| **HEVC / wxgf 原图** | 一部分图片（实测约六成）在微信里是 HEVC 封装的动图或原图。解密没问题、文件完整保存为 `.hevc`，但浏览器不能直接显示，需要转码（ffmpeg）才能看。 |
 | 语音 / 表情 | 微信 4.x 本地基本不落盘（`Voice`/`Emoji` 目录为空），只保留 `[语音 3"]`、`[表情]` 占位 |
 | 系统版本 | 仅支持 Windows + 微信 4.x；微信 3.x（`WeChat Files\Msg\MSG*.db`）格式不同，不支持 |
 | 账号范围 | 只能导出本机已登录账号；密钥缓存后可离线重复导出 |
@@ -115,6 +119,9 @@ CI（`.github/workflows/ci.yml`）在 Windows + Python 3.11~3.13 上跑这套自
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)——数据流、哪些模块能直接复用、哪些是微信专属
 必须重写、以及作者踩过的坑，都在里面。
 
+GitHub 上同类项目的对比、可以借鉴的算法（尤其图片密钥的离线派生）见
+[`docs/REFERENCES.md`](docs/REFERENCES.md)。
+
 ## 目录结构
 
 ```
@@ -132,12 +139,14 @@ wxexport/
   wxmsg.py              消息内容解析
   zstd_codec.py         zstd 解压（zstandard / Node.js）
   media.py              图片 .dat 解密、视频/文件搬运
+  imagekey.py           图片密钥离线派生（uin → AES / XOR 密钥 + 样本验证）
   exporter.py           HTML / TXT 渲染
   selftest.py           离线自检
   mediakey.py           [实验性] 内存里找图片密钥
 tests/                  unittest
 .github/workflows/      CI
 docs/ARCHITECTURE.md    架构说明与「接新平台」指南
+docs/REFERENCES.md      同类项目调研、可借鉴的算法与实测结论
 work/                   密钥缓存 + 解密后的数据库（敏感，可删）
 导出/                   导出结果
 ```
@@ -155,6 +164,10 @@ A：纯文字几秒到几十秒；带媒体取决于附件大小（实测 5500 �
 
 **Q：会封号吗？**
 A：工具只读本机数据库文件和微信进程内存，不修改微信行为、不接触服务器通信。
+
+**Q：图片导出成了 `.hevc`，打不开？**
+A：那是微信用 HEVC 封装的原图/动图，解密已经成功、数据是完整的。用支持 HEVC 的播放器
+（PotPlayer、VLC）打开，或 `ffmpeg -i 图片.hevc 图片.jpg` 转一张出来即可；HTML 里会给出下载链接。
 
 **Q：导出的 HTML 能发给别人吗？**
 A：可以，但里面是你自己的聊天内容；`media/` 目录要一起带上，页面里的图片是相对路径。

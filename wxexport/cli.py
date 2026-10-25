@@ -7,7 +7,7 @@ import os
 import sys
 import time
 
-from . import exporter, media as media_mod, pipeline, wxstore
+from . import exporter, imagekey, media as media_mod, pipeline, wxstore
 
 
 def _hr(t=""):
@@ -86,6 +86,47 @@ def _try_scan_media_key(account, target, work):
     return None
 
 
+def _parse_xor_key(raw) -> int | None:
+    """把 0x26 / 26 这样的十六进制写法转成 0~255 的整数。"""
+    if raw in (None, ""):
+        return None
+    s = str(raw).strip().lower()
+    if s.startswith("0x"):
+        s = s[2:]
+    try:
+        v = int(s, 16)
+    except ValueError:
+        return None
+    return v if 0 <= v <= 0xFF else None
+
+
+def _resolve_media_keys(args, account):
+    """决定这次导出用哪套图片密钥：手填 > 离线派生 > （交给内存扫描）。"""
+    if getattr(args, "no_media_key", False) and not args.media_key:
+        return None, None, ""
+
+    if args.media_key:
+        try:
+            aes_key = bytes.fromhex(args.media_key.strip())
+        except ValueError:
+            print("[!] --media-key 不是合法的十六进制，已忽略。")
+            aes_key = None
+        xor_key = _parse_xor_key(getattr(args, "media_xor_key", None))
+        if aes_key and xor_key is None:
+            samples = imagekey.v2_samples(account.path)
+            xor_key = imagekey.guess_xor_key(samples, aes_key)
+            if xor_key is not None:
+                print(f"[*] 尾段 XOR 密钥从文件尾反推为 0x{xor_key:02X}")
+        return aes_key, xor_key, "手填"
+
+    info = imagekey.find(account.path)
+    if info:
+        print(f"[+] 图片密钥：{imagekey.describe(info)}")
+        return info["aes_key"], info["xor_key"], "离线派生"
+    print("[*] 没能离线派生图片密钥（没有 V2 图片，或公式不适用）")
+    return None, None, ""
+
+
 def _locate_account(args):
     accounts = pipeline.list_accounts()
     if not accounts:
@@ -160,9 +201,12 @@ def main(argv=None) -> int:
     ap.add_argument("--work", help="工作目录（放密钥缓存和解密后的数据库）")
     ap.add_argument("--format", default="html,txt", help="导出格式，逗号分隔：html,txt")
     ap.add_argument("--no-media", action="store_true", help="不导出图片/视频/文件，只导文字")
-    ap.add_argument("--media-key", help="图片解密用的 AES-128 密钥（32 位十六进制），可选")
+    ap.add_argument("--media-key", help="图片解密用的 AES-128 密钥（32 位十六进制）；默认自动离线派生")
+    ap.add_argument("--media-xor-key", help="图片尾段的单字节 XOR 密钥（十六进制，如 0x26）；一般不用填")
+    ap.add_argument("--no-media-key", action="store_true",
+                    help="不自动派生图片密钥（解不开的图片按 .dat 原样保存）")
     ap.add_argument("--scan-media-key", action="store_true",
-                    help="（实验性，较慢）扫描微信进程内存尝试找图片密钥")
+                    help="（实验性，较慢）离线派生失败时，扫描微信进程内存找图片密钥")
     ap.add_argument("--list", action="store_true", help="只列出会话，不导出")
     ap.add_argument("--rescan", action="store_true", help="忽略缓存的密钥，重新从内存提取")
     ap.add_argument("--no-open", action="store_true", help="导出后不自动打开 HTML")
@@ -214,10 +258,15 @@ def main(argv=None) -> int:
         "导出", f"{_safe_name(display)}_{stamp}")
     os.makedirs(out_dir, exist_ok=True)
 
-    aes_key = bytes.fromhex(args.media_key) if args.media_key else None
-    if aes_key is None and getattr(args, "scan_media_key", False):
-        aes_key = _try_scan_media_key(account, target, work)
-    me = media_mod.MediaExporter(account, out_dir, aes_key) if not args.no_media else None
+    aes_key, xor_key, key_source = (None, None, "")
+    if not args.no_media:
+        aes_key, xor_key, key_source = _resolve_media_keys(args, account)
+        if aes_key is None and getattr(args, "scan_media_key", False):
+            aes_key = _try_scan_media_key(account, target, work)
+            if aes_key:
+                xor_key = imagekey.guess_xor_key(imagekey.v2_samples(account.path), aes_key)
+                key_source = "内存扫描"
+    me = media_mod.MediaExporter(account, out_dir, aes_key, xor_key) if not args.no_media else None
 
     print("[*] 读取并渲染消息 ...")
     t0 = time.time()
@@ -247,11 +296,20 @@ def main(argv=None) -> int:
         print(f"    - {os.path.basename(p)}  ({os.path.getsize(p) // 1024} KB)")
     if me is not None:
         st = me.stats
-        print(f"    媒体：图片 {st['image']} 张（其中原图未解密 {st['image_raw']} 张）、"
-              f"视频 {st['video']} 个、文件 {st['file']} 个、缺失 {st['missing']} 个")
-        if aes_key is None and st.get("image_raw"):
-            print("    提示：微信 4.1+ 的图片密钥只在内存里，未提供 --media-key 时")
-            print("          解不开的原图会以 .dat 原样保存在 media/ 目录，不会丢数据。")
+        print(f"    媒体：图片 {st['image']} 张、视频 {st['video']} 个、"
+              f"文件 {st['file']} 个、缺失 {st['missing']} 个")
+        detail = []
+        if st.get("image_hevc"):
+            detail.append(f"HEVC 封装的动图/原图 {st['image_hevc']} 张（已解密，浏览器不能直接显示）")
+        if st.get("image_raw"):
+            detail.append(f"未解开 {st['image_raw']} 张")
+        if detail:
+            print(f"          其中 {'；'.join(detail)}")
+        if st.get("image_raw"):
+            if key_source:
+                print("    提示：这些图片用现有密钥解不开，可能是新版本换了格式；原文件已原样保留。")
+            else:
+                print("    提示：没拿到图片密钥，解不开的原图会以 .dat 原样保存在 media/ 目录，不会丢数据。")
     print("=" * 66)
 
     if outputs and not args.no_open and "html" in formats:

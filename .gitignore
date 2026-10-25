@@ -20,13 +20,12 @@ __pycache__/
 venv/
 .vscode/
 .idea/
+.workbuddy/
 Thumbs.db
 desktop.ini
 
-# ´ò°üÓÃµÄ zip
+# å‘å¸ƒ/ä¸‹è½½ç”¨çš„ zipï¼ˆRelease é‡Œå•ç‹¬ä¸Šä¼ ï¼‰
 *.zip
 
-
-# ±¾µØ½âÑ¹ zip ²úÉúµÄ¸±±¾
+# ä» zip è§£å‹å‡ºæ¥çš„æºç å‰¯æœ¬
 wxchat-export/
-

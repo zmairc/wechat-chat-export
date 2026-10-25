@@ -25,7 +25,8 @@ work\decrypted\<账号>\*.db            ← 明文 SQLite（标准格式，可�
 [{local_id, type, sub_type, time, sender, is_self, content, md5}, …]
         │
         │ ④ wxmsg.render()        类型 / XML → {kind, text, media, quote}
-        │ ⑤ media.MediaExporter   图片 .dat 解密、视频与附件落盘
+        │ ⑤ media.MediaExporter   图片 .dat 解密（imagekey 派生 AES/XOR 密钥）、
+        │                         视频与附件落盘
         ▼
 entries ──⑥ exporter.write_html() / write_txt()──▶ 导出\<名字>_<时间>\
 ```
@@ -48,6 +49,7 @@ entries ──⑥ exporter.write_html() / write_txt()──▶ 导出\<名字>_<
 | `wxstore.py` | 微信 schema：`Msg_<md5>` 表、`Name2Id`、`packed_info_data` | **重写** |
 | `wxmsg.py` | 微信消息类型与 XML 结构 → 可读文本 | **重写** |
 | `media.py` | 图片 `.dat` 解密（旧 XOR / V1 / V2）、视频与附件搬运 | 复用框架，换格式判断 |
+| `imagekey.py` | 图片密钥离线派生：`uin` → AES / XOR 密钥，并用多个样本验证 | 微信专有公式，换平台要重写 |
 | `selftest.py` | 离线自检：自己造密文再解密，断言格式理解正确 | **复用套路**，加新格式断言 |
 | `cli.py` | 交互选好友、参数解析、导出流程 | 复用骨架 |
 
@@ -73,7 +75,17 @@ entries ──⑥ exporter.write_html() / write_txt()──▶ 导出\<名字>_<
 - V2（微信 4.1+ 主流）：`[6B 签名][4B aes_size][4B xor_size][1B pad]` + AES-128-ECB 段 + 明文段 + 单字节 XOR 段
 - V1：同上结构，但 AES 密钥是固定值 `md5("0")[:16]`
 - 更老的：整文件单字节 XOR，靠文件头魔数反推 key
-- V2 的 AES 密钥只在内存里以裸 16 字节存在，拿不到就只能保留 `.dat` 原文件
+- V2 的两把密钥都由账号级数字 `uin` 派生，**不用读进程内存**：
+
+  ```
+  aes_key = md5(f"{uin}{wxid}").hexdigest()[:16]   # 16 个 ASCII 字符直接当 16 字节用
+  xor_key = uin & 0xFF
+  ```
+
+  `uin` 来自 `%APPDATA%\Tencent\xwechat\net\kvcomm\key_<uin>_*.statistic` 的文件名，
+  兜底可用 `md5(str(uin))[:4] == wxid 目录后缀` 反推；`wxid` 是数据目录名去掉 `_<4位hex>`
+  后缀。派生结果必须用多个样本验证（AES 段解出图片魔数、尾段解出 `FF D9` / `IEND`）才算数。
+- 解出来是 `wxgf` 的（约六成）是 HEVC 封装的原图/动图，需要 ffmpeg 取帧才能显示。
 
 ## 4. 接一个新平台（QQ / 抖音…）怎么做
 
@@ -97,6 +109,7 @@ entries ──⑥ exporter.write_html() / write_txt()──▶ 导出\<名字>_<
 | 坑 | 表现 | 正确做法 |
 |---|---|---|
 | **CNG 的 CBC 会就地改写 IV** | 偶尔解出乱码、甚至内存异常 | 传 `create_string_buffer` 的可写缓冲区，不要直接传 Python `bytes` |
+| **V2 尾段的 XOR 密钥不是常量** | 图片头能解出来、尾部却是花屏，浏览器打不开 | 尾段密钥是 `uin & 0xFF`（因账号而异）；验证密钥不能只看文件头魔数，必须同时看文件尾的 `FF D9` / `IEND` |
 | **WAL 不能无条件回放** | 解密后 `integrity_check` 报 malformed | 先只解主库并校验；不通过再试回放 WAL |
 | **Windows runner 默认 cp1252** | CI 里 `UnicodeEncodeError` | 启动时 `stdout.reconfigure(encoding="utf-8")`，CI 里设 `PYTHONUTF8=1` |
 | **`.bat` 换行** | 下载后双击报「不是内部或外部命令」 | 仓库里存 LF + `.gitattributes` 写 `*.bat eol=crlf` |

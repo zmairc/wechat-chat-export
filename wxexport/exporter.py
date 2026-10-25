@@ -55,7 +55,8 @@ def build_entries(store, item: dict, media=None, include_media: bool = True) -> 
                     got = media.export_image(chat_hash, m.get("md5") or md.get("md5", ""), month)
                     if got.get("path"):
                         media_files.append({"kind": "image", "path": got["path"],
-                                            "decoded": got.get("decoded", False)})
+                                            "decoded": got.get("decoded", False),
+                                            "ext": got.get("ext", "")})
                 elif md["type"] == "file":
                     p = media.export_file(chat_hash, m.get("md5", ""), month,
                                           md.get("name", ""), md.get("size"))
@@ -107,8 +108,12 @@ def write_txt(entries: list[dict], title: str, subtitle: str, path: str) -> None
         media_note = []
         for m in e.get("media", []):
             if m["kind"] == "image":
-                media_note.append(m["path"] if m["decoded"]
-                                  else f"{m['path']}（微信加密格式，需密钥；可在微信里另存为原图）")
+                if m["decoded"]:
+                    media_note.append(m["path"])
+                elif m.get("ext") == "hevc":
+                    media_note.append(f"{m['path']}（HEVC 封装原图，已解密保存）")
+                else:
+                    media_note.append(f"{m['path']}（微信加密格式，需密钥；可在微信里另存为原图）")
             elif m["kind"] == "file":
                 media_note.append(f"附件：{m.get('name','')} -> {m['path']}")
             elif m["kind"] == "video":
@@ -248,6 +253,11 @@ def write_html(entries: list[dict], title: str, subtitle: str, path: str) -> Non
                     inner.append(
                         f'<a href="{html.escape(m["path"])}" target="_blank">'
                         f'<img src="{html.escape(m["path"])}" loading="lazy" alt="图片"></a>'
+                    )
+                elif m.get("ext") == "hevc":
+                    inner.append(
+                        f'<div class="raw">原图（微信 HEVC 封装，浏览器预览不了，已解密保存）：'
+                        f'<a href="{html.escape(m["path"])}" target="_blank">下载原文件</a></div>'
                     )
                 else:
                     inner.append(
