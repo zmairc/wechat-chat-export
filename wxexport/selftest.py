@@ -497,6 +497,76 @@ def check_key_cache() -> str:
             os.remove(path)
 
 
+# --------------------------------------------------- 9. QQ NT 的库结构
+
+def check_qq() -> str:
+    from . import qq
+
+    tmp = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "work", "tmp"))
+    os.makedirs(tmp, exist_ok=True)
+    path = os.path.join(tmp, "selftest_nt_msg.db")
+    out = os.path.join(tmp, "selftest_nt_msg_plain.db")
+
+    p = qq.PARAM_SETS[0]                    # 4000 轮 + HMAC-SHA1 + 48 保留区
+    passphrase = b"0123456789abcdef"
+    salt = bytes.fromhex("00112233445566778899aabbccddeeff")
+    enc_key, mac_key = qq.derive(passphrase, salt, p)
+    enc = _Enc(enc_key, "CBC")
+    ct1 = qq.PAGE_SZ - qq.SALT_SZ - p.reserve       # page1 有 16 字节 salt
+    ctn = qq.PAGE_SZ - p.reserve                    # 其余页没有
+    pad_len = p.reserve - 16 - p.mac_len
+
+    def seal(page_plain: bytes, pgno: int, first: bool) -> bytes:
+        iv = bytes((pgno * 29 + i) % 256 for i in range(16))
+        ct_len = ct1 if first else ctn
+        body = page_plain[qq.SALT_SZ: qq.SALT_SZ + ct_len] if first else page_plain[:ct_len]
+        ct = enc.encrypt(body, iv)
+        h = hmac_mod.new(mac_key, ct + iv, getattr(hashlib, p.mac_algo))
+        h.update(struct.pack("<I", pgno))
+        head = salt if first else b""
+        # SQLCipher 把 HMAC 写在页尾，中间的填充在 HMAC 之前
+        return head + ct + iv + b"\x00" * pad_len + h.digest()
+
+    pages = []
+    for pgno in (1, 2):
+        if pgno == 1:
+            plain = qq.SQLITE_HDR + bytes((i * 7 + 1) % 256 for i in range(ct1)) + b"\x00" * p.reserve
+        else:
+            plain = bytes((i * 11 + 3) % 256 for i in range(ctn)) + b"\x00" * p.reserve
+        pages.append((plain, seal(plain, pgno, pgno == 1)))
+
+    try:
+        header = b"SQLite header 3\x00".ljust(qq.HEADER_SZ, b"\x00")
+        with open(path, "wb") as f:
+            f.write(header)
+            for _plain, blob in pages:
+                f.write(blob)
+
+        db = qq.Database(path)
+        ok, detail = db.structure_ok()
+        _check(ok, f"结构判定失败：{detail}")
+        _check("2 页" in detail, f"页数算错了：{detail}")
+
+        page1 = db.page1()
+        _check(qq.verify(passphrase, page1, p), "自己造的库都校验不过")
+        _check(not qq.verify(b"wrong-passphrase", page1, p), "错口令居然通过了校验")
+
+        got = qq.detect(passphrase, page1)
+        _check(got is not None and got.name == p.name,
+               f"参数自动探测不对：{got}")
+
+        res = qq.decrypt_db(db, out, passphrase, p)
+        _check(res.get("ok"), f"解密失败：{res.get('error')}")
+        data = open(out, "rb").read()
+        _check(len(data) == 2 * qq.PAGE_SZ, f"解密后大小不对：{len(data)}")
+        _check(data[:16] == qq.SQLITE_HDR, "解密后 page1 不是 SQLite 头")
+        _check(data[:qq.PAGE_SZ] == pages[0][0], "page1 内容与原文不一致")
+        _check(data[qq.PAGE_SZ:] == pages[1][0], "page2 内容与原文不一致")
+        return "QQ NT 库结构（1024 字节头 / 参数探测 / 逐页解密）"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ------------------------------------------------------------------ 入口
 
 def force_utf8_stdio() -> None:
@@ -523,6 +593,7 @@ CHECKS = (
     check_hevc,
     check_csv_export,
     check_key_cache,
+    check_qq,
 )
 
 

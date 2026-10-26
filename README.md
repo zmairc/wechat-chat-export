@@ -70,6 +70,19 @@ python main.py --selftest             # 离线自检，不读微信不联网
 | `--account` | 指定微信账号（多账号时） |
 | `--yes / -y` | 自动确认，适合无人值守 |
 
+## QQ NT 支持（实验）
+
+同一套引擎正在往 QQ 上扩。**库结构、参数探测、逐页解密已经做完并进了自检**：
+
+```bash
+python qq_export.py probe                     # 找库、验证「1024 字节头 + 4096 页」
+python qq_export.py decrypt --key <16位口令>   # 自动试参数，解密到 work/qq_decrypted/
+python qq_export.py schema                    # 打印解密后的表结构
+```
+
+还差一步才能出 HTML：QQ 的 passphrase 不常驻内存，需要你提供一次（详见
+[`docs/QQ.md`](docs/QQ.md)）；拿到真实样本后校准消息字段映射即可复用现有渲染。
+
 ## 工作原理
 
 1. **找库**：扫描各磁盘定位 `xwechat_files\*\db_storage`，同一账号多份数据时挑最近的。
@@ -116,8 +129,8 @@ python main.py --selftest             # 离线自检，不读微信不联网
 ## 开发与自检
 
 ```bash
-python main.py --selftest              # 9 组断言：AES 向量 / SQLCipher / .dat / 渲染 /
-                                       # 图片密钥派生 / HEVC 抽流 / CSV / 密钥缓存加密
+python main.py --selftest              # 10 组断言：AES / SQLCipher / .dat / 渲染 /
+                                       # 图片密钥 / HEVC / CSV / 密钥缓存 / QQ 库结构
 python -m unittest discover -s tests   # 同一批断言，CI 里跑的就是这个
 ```
 
@@ -140,6 +153,7 @@ GitHub 上同类项目的对比、可以借鉴的算法（尤其图片密钥的�
 ```
 一键导出.bat            双击入口
 main.py                 命令行入口（--selftest 也在这）
+qq_export.py            QQ NT 入口（probe / decrypt / schema）
 wxexport/
   cli.py                交互/参数、选好友、导出流程
   pipeline.py           找数据目录、密钥缓存、批量解密
@@ -155,6 +169,7 @@ wxexport/
   media.py              图片 .dat 解密、视频/文件搬运
   imagekey.py           图片密钥离线派生（uin → AES / XOR 密钥 + 样本验证）
   hevc.py               HEVC/wxgf 抽流与转码（有 ffmpeg 才转，没有就抽流 + 缩略图）
+  qq.py                 QQ NT：1024 字节头、SQLCipher 参数探测、逐页解密
   exporter.py           HTML / TXT 渲染
   selftest.py           离线自检
   mediakey.py           [实验性] 内存里找图片密钥
@@ -166,6 +181,7 @@ tools/
 docs/ARCHITECTURE.md    架构说明与「接新平台」指南
 docs/LESSONS.md         所有踩过的坑（换平台前必读）
 docs/ROADMAP.md         多平台 + 移动端的可行性矩阵与路线图
+docs/QQ.md              QQ NT 的实测结论与当前边界
 docs/REFERENCES.md      同类项目调研、可借鉴的算法与实测结论
 work/                   密钥缓存 + 解密后的数据库（敏感，可删）
 导出/                   导出结果
